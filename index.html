@@ -107,10 +107,11 @@ code { font-family: var(--mono); font-size: .85em; color: var(--ember); }
   text-transform: uppercase; color: var(--ember); margin-bottom: .6rem;
 }
 #field {
-  display: block; width: 100%; height: 246px;
+  display: block; width: 100%; height: 330px;
   border: 1px solid var(--rule); background: #0b0a08;
-  border-radius: 2px;
+  border-radius: 2px; cursor: grab; touch-action: none;
 }
+#field:active { cursor: grabbing; }
 .field-desc {
   font-size: .78rem; font-style: italic; color: var(--paper-dim);
   line-height: 1.45; margin: .6rem 0 .4rem;
@@ -157,6 +158,15 @@ code { font-family: var(--mono); font-size: .85em; color: var(--ember); }
 .voice-btn.on { border-color: var(--ember); color: var(--ember); background: hsla(var(--lens-hue), 55%, 50%, .10); }
 .voice-btn.subtle { opacity: .7; }
 .voice-note { font-size: .7rem; font-style: italic; color: var(--paper-faint); margin: .55rem 0 0; line-height: 1.45; }
+.voice-pick-wrap {
+  display: block; margin-top: .6rem; font-family: var(--mono); font-size: .58rem;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--paper-faint);
+}
+#voice-pick {
+  display: block; width: 100%; margin-top: .3rem; padding: .4rem;
+  background: var(--ink-2); color: var(--paper-dim);
+  border: 1px solid var(--rule); font-family: var(--mono); font-size: .68rem;
+}
 .between-screen .voice-bar, .legacy-screen .voice-bar, .title-screen .voice-bar { border-top-color: var(--rule); }
 .title-screen .voice-bar, .between-screen .voice-bar { margin-top: 1.6rem; }
 .between-screen .voice-btn { color: #8d95ad; border-color: #2a2d3d; }
@@ -5700,6 +5710,7 @@ LIFE.FIELD = (function () {
         size: 3 + salience * 9,
         blur: 1 - understanding,
         angle: idHash(id) * TAU,
+        elev: (idHash(id + 'e') - 0.5) * 1.15,   // 3D: spread off the equator
         owed: false,
       });
     });
@@ -6013,7 +6024,392 @@ LIFE.FIELD = (function () {
       c.fillText(LIFE.T.lenses[s.lens].name.toLowerCase(), pad + i * colW, 12);
     });
   };
+  F.selfNodes = function (G) { return buildSelf(G); };
+  F.otherNodes = function (G, id) {
+    return buildOther(G, id).map(n => Object.assign({
+      elev: (idHash(n.id + 'e') - 0.5) * 1.15,
+    }, n));
+  };
+  F.cageOf = function (G, id) { return cageOf(G, id); };
   return F;
+})();
+
+window.LIFE = window.LIFE || {};
+LIFE.FIELD3D = (function () {
+  const F3 = {};
+  let cv = null, gl = null, raf = null, t = 0;
+  let progPoint = null, progLine = null;
+  let bufQuad = null, bufLine = null;
+  let nodes = [], lines = [];
+  let view = { mode: 'self', npc: null };
+  let hover = null, onPick = null, reduced = false;
+  let camYaw = 0.6, camPitch = 0.22, camDist = 9.2;
+  let targetYaw = 0.6, targetPitch = 0.22;
+  let lastW = 0, lastH = 0;
+  function perspective(fovy, aspect, near, far) {
+    const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+    return [f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) * nf, -1, 0, 0, 2 * far * near * nf, 0];
+  }
+  function lookAt(eye, ctr, up) {
+    let z0 = eye[0] - ctr[0], z1 = eye[1] - ctr[1], z2 = eye[2] - ctr[2];
+    let l = Math.hypot(z0, z1, z2) || 1; z0 /= l; z1 /= l; z2 /= l;
+    let x0 = up[1] * z2 - up[2] * z1, x1 = up[2] * z0 - up[0] * z2, x2 = up[0] * z1 - up[1] * z0;
+    l = Math.hypot(x0, x1, x2) || 1; x0 /= l; x1 /= l; x2 /= l;
+    const y0 = z1 * x2 - z2 * x1, y1 = z2 * x0 - z0 * x2, y2 = z0 * x1 - z1 * x0;
+    return [x0, y0, z0, 0, x1, y1, z1, 0, x2, y2, z2, 0,
+      -(x0 * eye[0] + x1 * eye[1] + x2 * eye[2]),
+      -(y0 * eye[0] + y1 * eye[1] + y2 * eye[2]),
+      -(z0 * eye[0] + z1 * eye[1] + z2 * eye[2]), 1];
+  }
+  function mul(a, b) {
+    const o = new Array(16);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+      o[i * 4 + j] = a[j] * b[i * 4] + a[4 + j] * b[i * 4 + 1] + a[8 + j] * b[i * 4 + 2] + a[12 + j] * b[i * 4 + 3];
+    }
+    return o;
+  }
+  function project(m, p) {
+    const x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
+    const y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
+    const w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+    return w > 0 ? { x: x / w, y: y / w, w } : null;
+  }
+  const VS_POINT = [
+    'attribute vec2 aCorner;',
+    'uniform mat4 uVP;',
+    'uniform vec3 uPos;',
+    'uniform vec3 uRight;',
+    'uniform vec3 uUp;',
+    'uniform float uSize;',
+    'varying vec2 vUV;',
+    'void main(){',
+    '  vUV = aCorner;',
+    '  vec3 p = uPos + uRight*aCorner.x*uSize + uUp*aCorner.y*uSize;',
+    '  gl_Position = uVP * vec4(p,1.0);',
+    '}'
+  ].join('\n');
+  const FS_POINT = [
+    'precision mediump float;',
+    'varying vec2 vUV;',
+    'uniform vec3 uColor;',
+    'uniform float uAlpha;',
+    'uniform float uSoft;',   // projection: how much of them is your idea
+    'void main(){',
+    '  float d = length(vUV);',
+    '  if(d>1.0) discard;',
+    '  float core = smoothstep(1.0, 0.0, d/max(0.12, uSoft));',
+    '  float halo = smoothstep(1.0, 0.0, d) * 0.55;',
+    '  float a = (core*0.9 + halo) * uAlpha;',
+    '  gl_FragColor = vec4(uColor*(0.55+core*0.9), a);',
+    '}'
+  ].join('\n');
+  const VS_LINE = [
+    'attribute vec3 aPos;',
+    'attribute float aFade;',
+    'uniform mat4 uVP;',
+    'varying float vFade;',
+    'void main(){ vFade=aFade; gl_Position = uVP * vec4(aPos,1.0); }'
+  ].join('\n');
+  const FS_LINE = [
+    'precision mediump float;',
+    'varying float vFade;',
+    'uniform vec3 uColor;',
+    'uniform float uAlpha;',
+    'void main(){ gl_FragColor = vec4(uColor, uAlpha*vFade); }'
+  ].join('\n');
+  function compile(src, type) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) return null;
+    return s;
+  }
+  function link(vs, fs) {
+    const v = compile(vs, gl.VERTEX_SHADER), f = compile(fs, gl.FRAGMENT_SHADER);
+    if (!v || !f) return null;
+    const p = gl.createProgram();
+    gl.attachShader(p, v); gl.attachShader(p, f); gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) return null;
+    return p;
+  }
+  function hueToRGB(h, s, l) {
+    h = ((h % 360) + 360) % 360 / 360; s = s / 100; l = l / 100;
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+    const f = tc => {
+      tc = (tc + 1) % 1;
+      if (tc < 1 / 6) return p + (q - p) * 6 * tc;
+      if (tc < 1 / 2) return q;
+      if (tc < 2 / 3) return p + (q - p) * (2 / 3 - tc) * 6;
+      return p;
+    };
+    return [f(h + 1 / 3), f(h), f(h - 1 / 3)];
+  }
+  function build(G) {
+    const flat = view.mode === 'self' ? LIFE.FIELD.selfNodes(G) : LIFE.FIELD.otherNodes(G, view.npc);
+    nodes = flat.map(n => {
+      const r = 2.1 + n.dist * 7.4;
+      const el = (n.elev != null ? n.elev : 0);
+      return {
+        id: n.id, name: n.name, isPlayer: n.isPlayer, owed: n.owed,
+        pos: [Math.cos(n.angle) * r * Math.cos(el), Math.sin(el) * r * 0.55, Math.sin(n.angle) * r * Math.cos(el)],
+        size: 0.16 + n.size * 0.058,
+        soft: Math.max(0.14, n.blur),
+        color: hueToRGB(n.hue, 62, 62),
+        alpha: 0.34 + (1 - n.blur) * 0.6,
+      };
+    });
+    lines = [];
+    const cage = LIFE.FIELD.cageOf(G, view.mode === 'self' ? null : view.npc);
+    const lens = LIFE.T.lenses[view.mode === 'self' ? G.lens : LIFE.FIELD.lensOf(view.npc)];
+    const hue = lens ? lens.hue : 36;
+    if (cage.visible && cage.density > 0.1) {
+      const bars = 10 + Math.round(cage.density * 18);
+      const rr = 2.5 - cage.density * 0.5;
+      const hh = 2.1 - cage.density * 0.35;
+      for (let i = 0; i < bars; i++) {
+        const a = (i / bars) * Math.PI * 2;
+        const x = Math.cos(a) * rr, z = Math.sin(a) * rr;
+        lines.push({ a: [x, -hh, z], b: [x, hh, z], fade: 0.25 + cage.density * 0.75, kind: 'cage' });
+      }
+      [-0.85, 0, 0.85].forEach(y => {
+        const seg = 40;
+        for (let i = 0; i < seg; i++) {
+          const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+          lines.push({
+            a: [Math.cos(a0) * rr, y * hh, Math.sin(a0) * rr],
+            b: [Math.cos(a1) * rr, y * hh, Math.sin(a1) * rr],
+            fade: 0.16 + cage.density * 0.5, kind: 'cage',
+          });
+        }
+      });
+    }
+    const reach = view.mode === 'self'
+      ? 5.5 + (G.axes.aware / 100) * 6.5 - (G.axes.entrench / 100) * 2.2
+      : 6.5 - cage.density * 2;
+    const rings = 5;
+    for (let r0 = 1; r0 <= rings; r0++) {
+      const y = (r0 / rings) * reach * 0.42 - reach * 0.1;
+      const rad = Math.sqrt(Math.max(0.01, 1 - Math.pow(r0 / (rings + 1.6), 2))) * reach;
+      const seg = 56;
+      for (let i = 0; i < seg; i++) {
+        const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+        lines.push({
+          a: [Math.cos(a0) * rad, y, Math.sin(a0) * rad],
+          b: [Math.cos(a1) * rad, y, Math.sin(a1) * rad],
+          fade: 0.05 + (1 - r0 / rings) * 0.09, kind: 'dome',
+        });
+      }
+    }
+    nodes.filter(n => n.owed).forEach(n => {
+      const steps = 9;
+      for (let i = 0; i < steps; i += 2) {
+        const t0 = i / steps, t1 = (i + 1) / steps;
+        lines.push({
+          a: [n.pos[0] * t0, n.pos[1] * t0, n.pos[2] * t0],
+          b: [n.pos[0] * t1, n.pos[1] * t1, n.pos[2] * t1],
+          fade: 0.5, kind: 'harm',
+        });
+      }
+    });
+    F3._hue = hue;
+    F3._coh = view.mode === 'self' ? G.axes.coherence : 60;
+  }
+  function resize() {
+    if (!cv || !gl) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const r = cv.getBoundingClientRect();
+    const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+    if (w !== lastW || h !== lastH) { cv.width = w; cv.height = h; lastW = w; lastH = h; }
+    gl.viewport(0, 0, cv.width, cv.height);
+  }
+  function draw() {
+    if (!gl) return;
+    resize();
+    const hue = F3._hue != null ? F3._hue : 36;
+    const bg = hueToRGB(hue, 30, 4);
+    gl.clearColor(bg[0], bg[1], bg[2], 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);          // additive: light, not paint
+    gl.disable(gl.DEPTH_TEST);
+    camYaw += (targetYaw - camYaw) * 0.05;
+    camPitch += (targetPitch - camPitch) * 0.05;
+    const drift = reduced ? 0 : t * 0.00007;
+    const yaw = camYaw + drift;
+    const eye = [
+      Math.cos(yaw) * Math.cos(camPitch) * camDist,
+      Math.sin(camPitch) * camDist,
+      Math.sin(yaw) * Math.cos(camPitch) * camDist,
+    ];
+    const aspect = cv.width / Math.max(1, cv.height);
+    const VP = mul(perspective(1.02, aspect, 0.1, 100), lookAt(eye, [0, 0, 0], [0, 1, 0]));
+    F3._VP = VP;
+    const fwd = [-eye[0], -eye[1], -eye[2]];
+    let l = Math.hypot(fwd[0], fwd[1], fwd[2]) || 1;
+    fwd[0] /= l; fwd[1] /= l; fwd[2] /= l;
+    const right = [fwd[2], 0, -fwd[0]];
+    l = Math.hypot(right[0], right[1], right[2]) || 1;
+    right[0] /= l; right[1] /= l; right[2] /= l;
+    const up = [
+      right[1] * fwd[2] - right[2] * fwd[1],
+      right[2] * fwd[0] - right[0] * fwd[2],
+      right[0] * fwd[1] - right[1] * fwd[0],
+    ];
+    if (lines.length) {
+      gl.useProgram(progLine);
+      const data = new Float32Array(lines.length * 8);
+      let o = 0;
+      lines.forEach(ln => {
+        data[o++] = ln.a[0]; data[o++] = ln.a[1]; data[o++] = ln.a[2]; data[o++] = ln.fade;
+        data[o++] = ln.b[0]; data[o++] = ln.b[1]; data[o++] = ln.b[2]; data[o++] = ln.fade;
+      });
+      gl.bindBuffer(gl.ARRAY_BUFFER, bufLine);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+      const aPos = gl.getAttribLocation(progLine, 'aPos');
+      const aFade = gl.getAttribLocation(progLine, 'aFade');
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 16, 0);
+      gl.enableVertexAttribArray(aFade);
+      gl.vertexAttribPointer(aFade, 1, gl.FLOAT, false, 16, 12);
+      gl.uniformMatrix4fv(gl.getUniformLocation(progLine, 'uVP'), false, new Float32Array(VP));
+      let start = 0;
+      const groups = [];
+      lines.forEach((ln, i) => {
+        if (i === 0 || ln.kind !== lines[i - 1].kind) { if (i > 0) groups.push({ kind: lines[i - 1].kind, from: start, to: i }); start = i; }
+        if (i === lines.length - 1) groups.push({ kind: ln.kind, from: start, to: lines.length });
+      });
+      groups.forEach(g => {
+        const c = g.kind === 'harm' ? hueToRGB(2, 60, 58)
+          : g.kind === 'cage' ? hueToRGB(hue, 45, 66)
+            : hueToRGB(hue, 35, 55);
+        gl.uniform3fv(gl.getUniformLocation(progLine, 'uColor'), new Float32Array(c));
+        gl.uniform1f(gl.getUniformLocation(progLine, 'uAlpha'), g.kind === 'dome' ? 0.5 : 0.85);
+        gl.drawArrays(gl.LINES, g.from * 2, (g.to - g.from) * 2);
+      });
+    }
+    gl.useProgram(progPoint);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufQuad);
+    const aCorner = gl.getAttribLocation(progPoint, 'aCorner');
+    gl.enableVertexAttribArray(aCorner);
+    gl.vertexAttribPointer(aCorner, 2, gl.FLOAT, false, 0, 0);
+    gl.uniformMatrix4fv(gl.getUniformLocation(progPoint, 'uVP'), false, new Float32Array(VP));
+    gl.uniform3fv(gl.getUniformLocation(progPoint, 'uRight'), new Float32Array(right));
+    gl.uniform3fv(gl.getUniformLocation(progPoint, 'uUp'), new Float32Array(up));
+    const uPos = gl.getUniformLocation(progPoint, 'uPos');
+    const uSize = gl.getUniformLocation(progPoint, 'uSize');
+    const uColor = gl.getUniformLocation(progPoint, 'uColor');
+    const uAlpha = gl.getUniformLocation(progPoint, 'uAlpha');
+    const uSoft = gl.getUniformLocation(progPoint, 'uSoft');
+    const order = nodes.slice().sort((a, b) => {
+      const da = Math.hypot(a.pos[0] - eye[0], a.pos[1] - eye[1], a.pos[2] - eye[2]);
+      const db = Math.hypot(b.pos[0] - eye[0], b.pos[1] - eye[1], b.pos[2] - eye[2]);
+      return db - da;
+    });
+    order.forEach(n => {
+      const isH = hover === n.id;
+      gl.uniform3fv(uPos, new Float32Array(n.pos));
+      gl.uniform1f(uSize, n.size * (isH ? 1.5 : 1));
+      gl.uniform3fv(uColor, new Float32Array(n.color));
+      gl.uniform1f(uAlpha, isH ? Math.min(1, n.alpha + 0.3) : n.alpha);
+      gl.uniform1f(uSoft, isH ? 0.5 : n.soft);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    });
+    const pulse = reduced ? 1 : 1 + Math.sin(t * 0.0015) * 0.08;
+    gl.uniform3fv(uPos, new Float32Array([0, 0, 0]));
+    gl.uniform1f(uSize, (0.30 + F3._coh / 420) * pulse);
+    gl.uniform3fv(uColor, new Float32Array(hueToRGB(hue, 85, 74)));
+    gl.uniform1f(uAlpha, 0.55 + F3._coh / 260);
+    gl.uniform1f(uSoft, 0.42);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+  function loop() { t += 16; if (LIFE.E.G) draw(); raf = requestAnimationFrame(loop); }
+  function hitAt(mx, my) {
+    if (!F3._VP || !cv) return null;
+    const r = cv.getBoundingClientRect();
+    const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+    const pad = coarse ? 34 : 22;
+    let best = Infinity, found = null;
+    nodes.forEach(n => {
+      if (n.isPlayer) return;
+      const p = project(F3._VP, n.pos);
+      if (!p) return;
+      const sx = (p.x * 0.5 + 0.5) * r.width, sy = (1 - (p.y * 0.5 + 0.5)) * r.height;
+      const d = Math.hypot(mx - sx, my - sy);
+      if (d < pad && d < best) { best = d; found = n.id; }
+    });
+    return found;
+  }
+  function localPoint(e) {
+    const r = cv.getBoundingClientRect();
+    const src = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
+    return { x: src.clientX - r.left, y: src.clientY - r.top };
+  }
+  F3.supported = function () {
+    try {
+      const c = document.createElement('canvas');
+      return !!(window.WebGLRenderingContext && (c.getContext('webgl') || c.getContext('experimental-webgl')));
+    } catch (e) { return false; }
+  };
+  F3.mount = function (canvas, pickHandler) {
+    onPick = pickHandler;
+    if (cv === canvas) return true;
+    cv = canvas;
+    gl = cv.getContext('webgl', { alpha: false, antialias: true, premultipliedAlpha: false })
+      || cv.getContext('experimental-webgl');
+    if (!gl) return false;
+    progPoint = link(VS_POINT, FS_POINT);
+    progLine = link(VS_LINE, FS_LINE);
+    if (!progPoint || !progLine) { gl = null; return false; }
+    bufQuad = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufQuad);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    bufLine = gl.createBuffer();
+    reduced = document.documentElement.classList.contains('reduced-motion');
+    let dragging = false, lastX = 0, lastY = 0, moved = 0;
+    cv.addEventListener('pointerdown', e => { dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY; });
+    cv.addEventListener('pointermove', e => {
+      const p = localPoint(e);
+      if (dragging) {
+        const dx = e.clientX - lastX, dy = e.clientY - lastY;
+        moved += Math.abs(dx) + Math.abs(dy);
+        targetYaw -= dx * 0.006;
+        targetPitch = Math.max(-0.8, Math.min(0.9, targetPitch + dy * 0.004));
+        lastX = e.clientX; lastY = e.clientY;
+      } else {
+        const f = hitAt(p.x, p.y);
+        if (f !== hover) { hover = f; cv.style.cursor = f ? 'pointer' : 'grab'; }
+      }
+    });
+    function release(e) {
+      const wasDrag = moved > 8;
+      dragging = false;
+      if (wasDrag) return;                      // a rotate is not a selection
+      const p = localPoint(e);
+      const id = hitAt(p.x, p.y);
+      if (id && onPick && view.mode === 'self') { hover = id; onPick(id); }
+    }
+    cv.addEventListener('pointerup', release);
+    cv.addEventListener('pointerleave', () => { dragging = false; hover = null; });
+    window.addEventListener('resize', resize);
+    if (!raf) loop();
+    return true;
+  };
+  F3.refresh = function (G) {
+    if (!gl || !G) return;
+    reduced = document.documentElement.classList.contains('reduced-motion');
+    build(G);
+    draw();
+  };
+  F3.setView = function (mode, npcId, G) {
+    view = { mode: mode, npc: npcId || null };
+    hover = null;
+    targetYaw += 1.1;
+    F3.refresh(G);
+  };
+  F3.hoveredName = function () {
+    const n = nodes.filter(x => x.id === hover)[0];
+    return n ? n.name : null;
+  };
+  return F3;
 })();
 
 window.LIFE = window.LIFE || {};
@@ -6027,23 +6423,37 @@ LIFE.VOICE = (function () {
   let token = 0;              // invalidates in-flight speech on screen change
   const KEY = 'life-voice-on';
   const ROLE = {
-    narrator:  { rate: 0.97, pitch: 0.94, slot: 0 },
-    lens:      { rate: 0.93, pitch: 1.16, slot: 1 },
-    aftermath: { rate: 0.93, pitch: 0.98, slot: 0 },
-    between:   { rate: 0.80, pitch: 0.82, slot: 2 },
-    legacy:    { rate: 0.89, pitch: 0.90, slot: 3 },
-    title:     { rate: 0.95, pitch: 1.0,  slot: 0 },
+    narrator:  { rate: 0.86, pitch: 0.92, slot: 0 },
+    lens:      { rate: 0.82, pitch: 1.02, slot: 1 },  // closer and inward, not higher-pitched
+    aftermath: { rate: 0.84, pitch: 0.92, slot: 0 },
+    between:   { rate: 0.72, pitch: 0.84, slot: 2 },  // the threshold: slowest, softest
+    legacy:    { rate: 0.80, pitch: 0.90, slot: 0 },
+    title:     { rate: 0.86, pitch: 0.94, slot: 0 },
   };
   function hash(s) {
     let h = 2166136261;
     for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
     return (h >>> 0) / 4294967296;
   }
+  function rankVoice(v) {
+    const n = (v.name || '');
+    if (/natural|neural/i.test(n)) return 100;
+    if (/online/i.test(n)) return 85;
+    if (/google/i.test(n)) return 75;
+    if (/premium|enhanced|siri/i.test(n)) return 65;
+    if (/samantha|serena|allison|ava|karen|moira|tessa|fiona|daniel/i.test(n)) return 55;
+    if (/zira|hazel|susan|linda/i.test(n)) return 25;
+    if (/david|mark|george|james/i.test(n)) return 15;
+    return 35;
+  }
   function loadVoices() {
     if (!synth) return;
     const all = synth.getVoices() || [];
     const en = all.filter(v => /^en(-|_|$)/i.test(v.lang || ''));
-    voices = (en.length ? en : all).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    voices = (en.length ? en : all).slice().sort((a, b) => {
+      const d = rankVoice(b) - rankVoice(a);
+      return d !== 0 ? d : (a.name || '').localeCompare(b.name || '');
+    });
   }
   if (synth) {
     loadVoices();
@@ -6065,10 +6475,24 @@ LIFE.VOICE = (function () {
     }
     return ROLE[role] || ROLE.narrator;
   }
+  let preferred = null;
   function voiceFor(s) {
     if (!voices.length) return null;
-    return voices[s.slot % voices.length];
+    let base = 0;
+    if (preferred) {
+      const i = voices.map(v => v.name).indexOf(preferred);
+      if (i >= 0) base = i;
+    }
+    return voices[(base + s.slot) % voices.length];
   }
+  V.listVoices = function () {
+    return voices.map(v => ({ name: v.name, lang: v.lang, quality: rankVoice(v) }));
+  };
+  V.getPreferred = function () { return preferred; };
+  V.setPreferred = function (name) {
+    preferred = name || null;
+    try { localStorage.setItem('life-voice-name', preferred || ''); } catch (e) {}
+  };
   function chunk(text) {
     const clean = String(text).replace(/\s+/g, ' ').trim();
     if (!clean) return [];
@@ -6110,11 +6534,15 @@ LIFE.VOICE = (function () {
     if (!enabled) V.stop();
   };
   V.restore = function () {
-    try { enabled = localStorage.getItem(KEY) === '1'; } catch (e) { enabled = false; }
+    try {
+      enabled = localStorage.getItem(KEY) === '1';
+      preferred = localStorage.getItem('life-voice-name') || null;
+    } catch (e) { enabled = false; }
     return enabled;
   };
   V.speak = function (parts) {
     if (!synth || !enabled) return;
+    const wasBusy = synth.speaking || synth.pending;
     V.stop();
     const myToken = token;
     parts.forEach(p => {
@@ -6122,7 +6550,9 @@ LIFE.VOICE = (function () {
       const s = settingsFor(p.role);
       chunk(p.text).forEach(t => queue.push({ text: t, settings: s }));
     });
-    if (queue.length) pump(myToken);
+    if (!queue.length) return;
+    if (wasBusy) setTimeout(() => pump(myToken), 130);
+    else pump(myToken);
   };
   V.readScreen = function (root) {
     if (!synth || !enabled) return;
@@ -6320,8 +6750,10 @@ LIFE.UI = (function () {
       + '<b>size</b> is how much of you they occupy.</li>'
       + '<li><b>Haze</b> around someone is projection — how much of them is still '
       + 'your idea of them rather than them.</li>'
-      + '<li><b>The lattice</b> is inherited certainty. It is always there. '
-      + 'It only draws once you are aware enough to see it.</li>'
+      + '<li><b>The lattice</b> is inherited certainty, drawn as a cage around '
+      + 'you — so you see everyone else through your own bars. It is always '
+      + 'there; it only draws once you are aware enough to see it.</li>'
+      + '<li><b>Drag</b> to turn the field and look from another angle.</li>'
       + '<li><b>Dashed threads</b> run to people you owe something.</li>'
       + '</ul></details>'
       + voiceBar()
@@ -6338,25 +6770,50 @@ LIFE.UI = (function () {
       + 'aria-pressed="' + (on ? 'true' : 'false') + '">'
       + (on ? '◼ reading aloud' : '▶ read aloud') + '</button>'
       + (on ? '<button id="voice-stop" class="voice-btn subtle">stop</button>' : '')
+      + (on ? voicePicker() : '')
       + '<p class="voice-note">The event and your reading of it are different voices. '
       + 'So is each person you stand inside.</p></div>';
+  }
+  function voicePicker() {
+    const list = LIFE.VOICE.listVoices();
+    if (list.length < 2) return '';
+    const cur = LIFE.VOICE.getPreferred();
+    return '<label class="voice-pick-wrap">voice'
+      + '<select id="voice-pick">'
+      + list.map(v => '<option value="' + esc(v.name) + '"'
+          + (v.name === cur ? ' selected' : '') + '>'
+          + esc(v.name.replace(/^Microsoft /, '').replace(/ - .*$/, ''))
+          + (v.quality >= 75 ? ' ✦' : '') + '</option>').join('')
+      + '</select></label>';
   }
   function wireVoice() {
     const t = document.getElementById('voice-toggle');
     if (t) t.addEventListener('click', () => {
-      const next = !LIFE.VOICE.isOn();
-      LIFE.VOICE.setEnabled(next);
-      UI.render();                       // repaint the control, then read
-      if (next) LIFE.VOICE.readScreen();
+      LIFE.VOICE.setEnabled(!LIFE.VOICE.isOn());
+      UI.render();
+    });
+    const sel = document.getElementById('voice-pick');
+    if (sel) sel.addEventListener('change', () => {
+      LIFE.VOICE.setPreferred(sel.value);
+      LIFE.VOICE.sample('narrator', 'This is the voice the world will be read in.');
     });
     const s = document.getElementById('voice-stop');
     if (s) s.addEventListener('click', () => LIFE.VOICE.stop());
   }
+  let use3D = null;
   function syncField(G) {
     const cv = document.getElementById('field');
     if (!cv || !G) return;
-    LIFE.FIELD.mount(cv, id => enterPerspective(id));
-    LIFE.FIELD.refresh(G);
+    if (use3D === null) use3D = LIFE.FIELD3D && LIFE.FIELD3D.supported();
+    if (use3D) {
+      if (LIFE.FIELD3D.mount(cv, id => enterPerspective(id))) {
+        LIFE.FIELD3D.refresh(G);
+      } else { use3D = false; }
+    }
+    if (!use3D) {
+      LIFE.FIELD.mount(cv, id => enterPerspective(id));
+      LIFE.FIELD.refresh(G);
+    }
     const d = document.getElementById('field-desc');
     if (d) d.textContent = LIFE.FIELD.describe(G);
     const list = document.getElementById('presence-list');
@@ -6372,15 +6829,18 @@ LIFE.UI = (function () {
       list.innerHTML = '';
     }
   }
+  function setFieldView(mode, npcId, G) {
+    LIFE.FIELD.setView(mode, npcId, G);
+    if (use3D && LIFE.FIELD3D) LIFE.FIELD3D.setView(mode, npcId, G);
+  }
   function enterPerspective(npcId) {
-    const G = LIFE.E.G;
     perspective = npcId;
-    LIFE.FIELD.setView('other', npcId, G);
+    setFieldView('other', npcId, LIFE.E.G);
     UI.render();
   }
   function exitPerspective() {
     perspective = null;
-    LIFE.FIELD.setView('self', null, LIFE.E.G);
+    setFieldView('self', null, LIFE.E.G);
     UI.render();
   }
   UI.exitPerspective = exitPerspective;
@@ -6645,7 +7105,7 @@ LIFE.UI = (function () {
     const node = LIFE.E.node();
     if (node.kind !== 'scene' && perspective) {
       perspective = null;
-      LIFE.FIELD.setView('self', null, G);
+      setFieldView('self', null, G);
     }
     document.documentElement.classList.toggle('in-between', node.kind === 'between' || node.kind === 'death');
     if (node.kind === 'origin') return after(originScreen(G));
