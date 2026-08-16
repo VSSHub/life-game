@@ -6808,6 +6808,7 @@ LIFE.UI = (function () {
     if (use3D) {
       if (LIFE.FIELD3D.mount(cv, id => enterPerspective(id))) {
         LIFE.FIELD3D.refresh(G);
+        LIFE.FIELD.refresh(G);
       } else { use3D = false; }
     }
     if (!use3D) {
