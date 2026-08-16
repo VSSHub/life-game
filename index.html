@@ -129,6 +129,23 @@ code { font-family: var(--mono); font-size: .85em; color: var(--ember); }
   padding-left: .6rem; border-left: 1px solid var(--rule);
 }
 .field-key b { color: var(--paper-dim); font-weight: 600; }
+.presence-list { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .6rem; }
+.presence {
+  font-family: var(--mono); font-size: .62rem; letter-spacing: .06em;
+  background: transparent; color: var(--paper-dim); border: 1px solid var(--rule);
+  padding: .35rem .55rem; cursor: pointer; border-radius: 2px;
+}
+.presence:hover, .presence:focus-visible { border-color: var(--ember); color: var(--ember); }
+.presence-none { font-size: .72rem; color: var(--paper-faint); font-style: italic; margin: 0; }
+@media (pointer: coarse) {
+  .presence, .voice-btn { min-height: 44px; padding: .7rem .9rem; font-size: .7rem; }
+  .field-key summary, .evidence summary { min-height: 44px; display: flex; align-items: center; }
+  .choice { padding: 1rem 1.1rem; }
+  .btn { min-height: 44px; padding: .9rem 1.5rem; }
+  #dev-toggle { width: 44px; height: 44px; }
+  .a11y label { min-height: 44px; display: inline-flex; align-items: center; }
+  #field { height: 280px; }
+}
 .voice-bar { margin-top: 1.1rem; padding-top: .9rem; border-top: 1px solid var(--rule); }
 .voice-btn {
   font-family: var(--mono); font-size: .62rem; letter-spacing: .18em; text-transform: uppercase;
@@ -272,6 +289,9 @@ html.in-between body { background: #08070a; }
 #dev-panel h3 { font-family: var(--mono); font-size: .72rem; letter-spacing: .18em; text-transform: uppercase; color: var(--ember); margin-bottom: .6rem; }
 #dev-panel h3 span { color: var(--paper-faint); letter-spacing: .06em; text-transform: none; }
 #dev-panel pre { font-family: var(--mono); font-size: .72rem; color: #9fb08a; white-space: pre-wrap; }
+@media (pointer: coarse) {
+  #dev-toggle { width: 44px; height: 44px; }
+}
 </style>
 <div id="app"></div>
 <script>
@@ -5847,6 +5867,22 @@ LIFE.FIELD = (function () {
     if (LIFE.E.G) draw(LIFE.E.G);
     raf = requestAnimationFrame(loop);
   }
+  function hitAt(mx, my) {
+    const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+    const pad = coarse ? 22 : 13;
+    let found = null, best = Infinity;
+    nodes.forEach(n => {
+      if (n._x == null) return;
+      const d = Math.hypot(mx - n._x, my - n._y);
+      if (d < Math.max(pad, n.size * 2.2) && d < best) { best = d; found = n.id; }
+    });
+    return found;
+  }
+  function localPoint(e) {
+    const r = cv.getBoundingClientRect();
+    const src = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
+    return { x: src.clientX - r.left, y: src.clientY - r.top };
+  }
   F.mount = function (canvas, pickHandler) {
     if (cv === canvas) { onPick = pickHandler; return; }   // already wired
     cv = canvas; ctx = cv.getContext('2d'); onPick = pickHandler;
@@ -5855,21 +5891,31 @@ LIFE.FIELD = (function () {
     resize();
     window.addEventListener('resize', resize);
     cv.addEventListener('mousemove', e => {
-      const r = cv.getBoundingClientRect();
-      const mx = e.clientX - r.left, my = e.clientY - r.top;
-      let found = null;
-      nodes.forEach(n => {
-        if (n._x == null) return;
-        const d = Math.hypot(mx - n._x, my - n._y);
-        if (d < Math.max(13, n.size * 2.2)) found = n.id;
-      });
+      const p = localPoint(e);
+      const found = hitAt(p.x, p.y);
       if (found !== hover) { hover = found; cv.style.cursor = found ? 'pointer' : 'default'; }
     });
     cv.addEventListener('mouseleave', () => { hover = null; });
-    cv.addEventListener('click', () => {
-      if (hover && onPick && view.mode === 'self' && hover !== '__player') onPick(hover);
-    });
+    function pick(e) {
+      const p = localPoint(e);
+      const id = hitAt(p.x, p.y);
+      if (!id) return;
+      hover = id;                       // label it, so a tap gives feedback too
+      if (onPick && view.mode === 'self' && id !== '__player') {
+        if (e.cancelable) e.preventDefault();
+        onPick(id);
+      }
+    }
+    cv.addEventListener('click', pick);
+    cv.addEventListener('touchend', pick, { passive: false });
     if (!raf) loop();
+  };
+  F.presences = function () {
+    return nodes
+      .filter(n => !n.isPlayer && n.id.indexOf('o_') !== 0)
+      .slice()
+      .sort((a, b) => a.dist - b.dist)
+      .map(n => ({ id: n.id, name: n.name }));
   };
   F.refresh = function (G) {
     if (!G) return;
@@ -6265,7 +6311,8 @@ LIFE.UI = (function () {
       + '<h3>Your Field</h3>'
       + '<canvas id="field" aria-label="A live picture of your perceptual dimension."></canvas>'
       + '<p class="field-desc" id="field-desc"></p>'
-      + '<p class="field-hint" id="field-hint">Click a presence to stand inside their dimension.</p>'
+      + '<p class="field-hint" id="field-hint">Tap a presence to stand inside their dimension.</p>'
+      + '<div class="presence-list" id="presence-list"></div>'
       + '<details class="field-key"><summary>What am I looking at?</summary>'
       + '<ul>'
       + '<li><b>The centre</b> is you. Its steadiness is your coherence.</li>'
@@ -6312,6 +6359,18 @@ LIFE.UI = (function () {
     LIFE.FIELD.refresh(G);
     const d = document.getElementById('field-desc');
     if (d) d.textContent = LIFE.FIELD.describe(G);
+    const list = document.getElementById('presence-list');
+    if (list && !perspective) {
+      const people = LIFE.FIELD.presences();
+      list.innerHTML = people.length
+        ? people.map(p => '<button class="presence" data-npc="' + p.id + '">' + esc(p.name) + '</button>').join('')
+        : '<p class="presence-none">No one is in your field yet.</p>';
+      Array.prototype.forEach.call(list.querySelectorAll('.presence'), b => {
+        b.addEventListener('click', () => enterPerspective(b.getAttribute('data-npc')));
+      });
+    } else if (list) {
+      list.innerHTML = '';
+    }
   }
   function enterPerspective(npcId) {
     const G = LIFE.E.G;
