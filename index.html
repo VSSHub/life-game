@@ -127,6 +127,10 @@ code { font-family: var(--mono); font-size: .85em; color: var(--ember); }
   padding: .7rem .9rem; margin: 0 0 1.2rem; font-size: .88rem; text-align: left;
 }
 .save-note { font-size: .82rem; color: var(--paper-faint); margin-top: 1rem; }
+.shared-seed-note {
+  font-size: .86rem; font-style: italic; color: var(--ember);
+  margin: -.8rem 0 1.4rem;
+}
 .footnote { margin-top: 1.6rem; color: var(--paper-faint); font-style: italic; font-size: .88rem; }
 .btn {
   font-family: var(--mono); font-size: .8rem; letter-spacing: .18em; text-transform: uppercase;
@@ -173,7 +177,8 @@ code { font-family: var(--mono); font-size: .85em; color: var(--ember); }
 #field {
   display: block; width: 100%; height: 330px;
   border: 1px solid var(--rule); background: #0b0a08;
-  border-radius: 2px; cursor: grab; touch-action: none;
+  border-radius: 2px; cursor: grab;
+  touch-action: pan-y;
 }
 #field:active { cursor: grabbing; }
 .field-desc {
@@ -6845,8 +6850,9 @@ LIFE.LEGACY = (function () {
       + built + '\n'
       + close + ' people knew themselves seen by me. ' + cold + ' ended the account in the red.\n\n'
       + '"' + L.finalQuestion() + '"\n\n'
-      + 'Seed ' + G.seed + ' — play the same world from a different birth:\n'
-      + (url || 'https://vsshub.github.io/life-game/');
+      + 'Play the same world from a different birth:\n'
+      + (url || 'https://vsshub.github.io/life-game/')
+      + '?seed=' + encodeURIComponent(G.seed);
   };
   L.finalQuestion = function () {
     return 'What kind of reality did my way of seeing make possible — and who had to live inside it with me?';
@@ -7033,6 +7039,12 @@ LIFE.UI = (function () {
       + 'and it settles nothing you owe them.</p>'
       + '<button class="btn" id="btn-back">Return to your own field</button></div>';
   }
+  function sharedSeed() {
+    try {
+      const m = /[?&]seed=([^&#]+)/.exec(location.search);
+      return m ? decodeURIComponent(m[1]).slice(0, 60) : null;
+    } catch (e) { return null; }
+  }
   function savedLifeSummary() {
     try {
       const raw = store.get('life-slice-save-v1');
@@ -7083,7 +7095,10 @@ LIFE.UI = (function () {
       + '<label><input type="checkbox" id="opt-contrast"> High contrast</label>'
       + '<label><input type="checkbox" id="opt-motion"> Reduce motion</label></div>'
       + '<div class="seed-row"><label for="seed">Seed <span class="seed-hint">(a world; leave blank for a new one)</span></label>'
-      + '<input id="seed" type="text" placeholder="e.g. marrow-levee-441" autocomplete="off"></div>'
+      + '<input id="seed" type="text" placeholder="e.g. marrow-levee-441" autocomplete="off" value="'
+      + esc(sharedSeed() || '') + '"></div>'
+      + (sharedSeed() ? '<p class="shared-seed-note">Someone sent you their world. '
+          + 'Begin, and you will live it from a different birth.</p>' : '')
       + (canSave ? '' : '<p class="storage-warn">This browser will not let the game save. '
           + 'You can still play, but the life ends when you close this tab.</p>')
       + '<div class="title-buttons" id="title-buttons">'
