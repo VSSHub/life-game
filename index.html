@@ -135,6 +135,21 @@ code { font-family: var(--mono); font-size: .85em; color: var(--ember); }
 .rail-town { color: var(--paper-dim); }
 .rail-lens em { font-style: normal; color: var(--ember); }
 .rail-att { color: var(--ember-dim); letter-spacing: .3em; }
+.rail-prog { display: inline-flex; align-items: center; gap: .45rem; color: var(--paper-faint); }
+.prog-bar {
+  display: inline-block; width: 3.4rem; height: 2px; background: var(--rule);
+  position: relative; vertical-align: middle;
+}
+.prog-bar i { display: block; height: 100%; background: var(--ember-dim); }
+.share-sec { margin: 2.6rem 0 1.4rem; padding-top: 1.6rem; border-top: 1px solid var(--rule); text-align: center; }
+.share-sec h3 { font-family: var(--mono); font-size: .64rem; letter-spacing: .28em; text-transform: uppercase; color: var(--ember); margin-bottom: .5rem; }
+.share-note { font-size: .88rem; font-style: italic; color: var(--paper-dim); margin-bottom: 1rem; }
+.share-status { font-family: var(--mono); font-size: .64rem; letter-spacing: .12em; text-transform: uppercase; color: var(--ember-dim); margin-top: .8rem; }
+.share-fallback {
+  display: block; width: 100%; margin-top: .7rem; padding: .7rem;
+  background: var(--ink-2); color: var(--paper-dim); border: 1px solid var(--rule);
+  font-family: var(--mono); font-size: .72rem; line-height: 1.5; resize: vertical;
+}
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 286px; gap: 2.4rem; align-items: start; }
 .layout .screen { margin: 0; max-width: var(--measure); }
 .rail-panel { position: sticky; top: 1.2rem; margin-top: 3.4rem; animation: rise .8s ease both; }
@@ -6768,6 +6783,30 @@ LIFE.LEGACY = (function () {
       return { name: w.name, text: w.epilogue(G.npcs[id], G) };
     });
   };
+  L.shareText = function (G, url) {
+    const O = LIFE.W.origins[G.origin];
+    const born = O.birthYear, died = born + G.deathAge;
+    const lens = G.lensHistory.map(h => LIFE.T.lenses[h.lens].name);
+    const journey = lens.filter((n, i) => i === 0 || n !== lens[i - 1]).join(' → ');
+    const drift = LIFE.T.commonsDrift(G);
+    const built = {
+      living: 'I built something that outlived my control and survived being wrong.',
+      church: 'I built the alternative, and it slowly became the thing it opposed.',
+      drifting: 'I built something that still stands, drifting on currents I never charted.',
+      closed: 'I built something that closed, and proved a thing worth proving.',
+      never: 'I never built the thing I could see the shape of.',
+    }[drift];
+    const close = Object.keys(G.npcs).filter(id => G.npcs[id].trust >= 58).length;
+    const cold = Object.keys(G.npcs).filter(id => G.npcs[id].trust < 38).length;
+    return 'I lived one life in Harrow\'s Bend.\n\n'
+      + O.title + ', ' + born + '–' + died + '.\n'
+      + 'I saw it through: ' + journey + '.\n'
+      + built + '\n'
+      + close + ' people knew themselves seen by me. ' + cold + ' ended the account in the red.\n\n'
+      + '"' + L.finalQuestion() + '"\n\n'
+      + 'Seed ' + G.seed + ' — play the same world from a different birth:\n'
+      + (url || 'https://vsshub.github.io/life-game/');
+  };
   L.finalQuestion = function () {
     return 'What kind of reality did my way of seeing make possible — and who had to live inside it with me?';
   };
@@ -6801,9 +6840,17 @@ LIFE.UI = (function () {
   function rail(G, ch) {
     const lens = LIFE.T.lenses[G.lens];
     const att = '●'.repeat(G.att) + '○'.repeat(Math.max(0, G.attMax - G.att));
+    let progress = '';
+    if (ch) {
+      const i = LIFE.CH.indexOf(ch), n = LIFE.CH.length;
+      progress = '<span class="rail-prog" title="Chapter ' + (i + 1) + ' of ' + n
+        + ' — then aging, death, and the accounting.">'
+        + '<b class="prog-bar"><i style="width:' + Math.round(((i + 1) / n) * 100) + '%"></i></b>'
+        + (i + 1) + '/' + n + '</span>';
+    }
     return '<header class="rail">'
       + '<div class="rail-left"><span class="rail-town">Harrow’s Bend</span>'
-      + (ch ? '<span class="rail-ch">Ch. ' + ch.num + ' — ' + ch.title + '</span><span class="rail-age">Age ' + ch.age + ' · ' + ch.year + '</span>' : '')
+      + (ch ? '<span class="rail-ch">Ch. ' + ch.num + ' — ' + ch.title + '</span><span class="rail-age">Age ' + ch.age + ' · ' + ch.year + '</span>' + progress : '')
       + '</div>'
       + '<div class="rail-right">'
       + '<span class="rail-lens" title="' + lens.desc + '">lens: <em>' + lens.name + '</em></span>'
@@ -7153,16 +7200,53 @@ LIFE.UI = (function () {
     eps.forEach(e => { html += '<div class="ep"><h4>' + e.name + '</h4><p>' + e.text + '</p></div>'; });
     html += '</div></section>';
     html += '<section class="legacy-final"><p>' + LIFE.LEGACY.finalQuestion() + '</p></section>';
+    html += '<section class="share-sec"><h3>Take it with you</h3>'
+      + '<p class="share-note">This life happened once. Nobody else will get this one.</p>'
+      + '<div class="title-buttons">'
+      + '<button class="btn btn-primary" id="btn-share">Share this life</button>'
+      + '</div><p class="share-status" id="share-status" role="status"></p></section>';
     html += voiceBar();
     html += '<div class="title-buttons"><button class="btn btn-primary" id="btn-again">Live again — same world, different birth</button>'
       + '<button class="btn" id="btn-fresh">A new world entirely</button></div></div>';
     app.innerHTML = html;
     LIFE.FIELD.drawArc(document.getElementById('arc'), G);
+    wireShare(G);
     document.getElementById('btn-again').addEventListener('click', () => {
       const seed = G.seed; LIFE.E.wipe(); LIFE.E.newGame(seed + '+'); montageStep = 0; mode = 'node'; safeRender();
     });
     document.getElementById('btn-fresh').addEventListener('click', () => {
       LIFE.E.wipe(); montageStep = 0; mode = 'node'; safeRender();
+    });
+  }
+  function wireShare(G) {
+    const btn = document.getElementById('btn-share');
+    const status = document.getElementById('share-status');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const url = (location.protocol === 'http:' || location.protocol === 'https:')
+        ? location.origin + location.pathname
+        : 'https://vsshub.github.io/life-game/';
+      const text = LIFE.LEGACY.shareText(G, url);
+      try {
+        if (navigator.share) {
+          await navigator.share({ title: 'LIFE — one life in Harrow’s Bend', text: text });
+          status.textContent = 'Shared.';
+          return;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          status.textContent = 'Copied. Paste it wherever you like.';
+          return;
+        }
+        throw new Error('no share or clipboard');
+      } catch (e) {
+        if (e && e.name === 'AbortError') { status.textContent = ''; return; }
+        const box = el('<textarea class="share-fallback" readonly rows="9"></textarea>');
+        box.value = text;
+        status.textContent = 'Copy this:';
+        status.parentNode.appendChild(box);
+        box.focus(); box.select();
+      }
     });
   }
   function devOverlay() {
