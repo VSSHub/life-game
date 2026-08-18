@@ -292,6 +292,19 @@ html.in-between body { background: #08070a; }
 .ep p { font-size: .86rem; color: var(--paper-dim); margin: 0; }
 .legacy-final { margin: 3rem 0 2.4rem; padding: 2rem 0; border-top: 2px solid var(--ember); border-bottom: 2px solid var(--ember); text-align: center; }
 .legacy-final p { font-size: 1.25rem; font-style: italic; color: var(--paper); margin: 0; }
+.boot-screen { text-align: center; padding-top: 16vh; animation: none; opacity: .82; }
+.boot-screen .epigraph { margin-top: 1.4rem; }
+.recovery-screen { padding-top: 12vh; max-width: 56ch; }
+.recovery-screen h2 { font-size: 1.9rem; margin-bottom: 1rem; }
+.recovery-detail { margin-top: 2rem; border-top: 1px solid var(--rule); padding-top: 1rem; }
+.recovery-detail summary {
+  cursor: pointer; font-family: var(--mono); font-size: .64rem;
+  letter-spacing: .2em; text-transform: uppercase; color: var(--paper-faint);
+}
+.recovery-detail pre {
+  font-family: var(--mono); font-size: .68rem; color: var(--paper-faint);
+  white-space: pre-wrap; margin-top: .8rem; max-height: 30vh; overflow: auto;
+}
 #dev-toggle {
   position: fixed; right: .9rem; bottom: .9rem; z-index: 50;
   width: 2.2rem; height: 2.2rem; border-radius: 50%;
@@ -311,7 +324,7 @@ html.in-between body { background: #08070a; }
   #dev-toggle { width: 44px; height: 44px; }
 }
 </style>
-<div id="app"></div>
+<div id="app"><div class="screen boot-screen"><p class="kicker">loading</p><h1 class="game-title">L I F E</h1><p class="epigraph">Every person experiences a different version of the same world.</p><noscript><p class="epigraph">This game needs JavaScript enabled. It runs entirely on your device and sends nothing anywhere.</p></noscript></div></div>
 <script>
 window.LIFE = window.LIFE || {};
 LIFE.T = (function () {
@@ -654,14 +667,40 @@ LIFE.E = (function () {
     const passing = choices.filter(c => !c.when || c.when(G));
     return passing.length > 0 && !passing.some(c => !c.cost || G.att >= c.cost);
   };
+  const CHECKPOINT_KEY = 'life-slice-checkpoint-v1';
+  E.checkpoint = function () {
+    try { localStorage.setItem(CHECKPOINT_KEY, JSON.stringify({ v: 1, G: E.G })); } catch (e) {}
+  };
+  E.restoreCheckpoint = function () {
+    try {
+      const raw = localStorage.getItem(CHECKPOINT_KEY);
+      if (!raw) return false;
+      const d = JSON.parse(raw);
+      if (!d || !d.G || !d.G.seed) return false;
+      E.G = d.G;
+      rngFn = mulberry32(hashSeed(E.G.seed));
+      const calls = E.G.rngCalls; E.G.rngCalls = 0;
+      for (let i = 0; i < calls; i++) rngFn();
+      E.G.rngCalls = calls;
+      E.save();
+      return true;
+    } catch (e) { return false; }
+  };
   E.choose = function (choice) {
     const G = E.G;
+    E.checkpoint();
     if (choice.cost) G.att = Math.max(0, G.att - choice.cost);
-    if (typeof choice.fx === 'function') {
-      const after = choice.fx(G);
-      if (typeof after === 'string') G.lastAfter = after;
-    } else if (choice.fx) {
-      E.applyFx(choice.fx);
+    try {
+      if (typeof choice.fx === 'function') {
+        const after = choice.fx(G);
+        if (typeof after === 'string') G.lastAfter = after;
+      } else if (choice.fx) {
+        E.applyFx(choice.fx);
+      }
+    } catch (err) {
+      G.lastAfter = G.lastAfter || 'The moment passes, indistinctly. Something in the telling '
+        + 'of it did not survive — but the life goes on, which is the usual arrangement.';
+      if (window.console && console.warn) console.warn('LIFE: effect failed', err);
     }
     if (!G.lastAfter) {
       G.lastAfter = typeof choice.after === 'function' ? choice.after(G) : (choice.after || null);
@@ -6798,7 +6837,7 @@ LIFE.UI = (function () {
     const t = document.getElementById('voice-toggle');
     if (t) t.addEventListener('click', () => {
       LIFE.VOICE.setEnabled(!LIFE.VOICE.isOn());
-      UI.render();
+      safeRender();
     });
     const sel = document.getElementById('voice-pick');
     if (sel) sel.addEventListener('change', () => {
@@ -6845,12 +6884,12 @@ LIFE.UI = (function () {
   function enterPerspective(npcId) {
     perspective = npcId;
     setFieldView('other', npcId, LIFE.E.G);
-    UI.render();
+    safeRender();
   }
   function exitPerspective() {
     perspective = null;
     setFieldView('self', null, LIFE.E.G);
-    UI.render();
+    safeRender();
   }
   UI.exitPerspective = exitPerspective;
   function perspectivePanel(G, scene) {
@@ -6907,13 +6946,13 @@ LIFE.UI = (function () {
     });
     const cont = document.getElementById('btn-continue');
     if (cont) cont.addEventListener('click', () => {
-      if (LIFE.E.load()) { mode = LIFE.E.G.lastAfter ? 'aftermath' : 'node'; UI.render(); }
+      if (LIFE.E.load()) { mode = LIFE.E.G.lastAfter ? 'aftermath' : 'node'; safeRender(); }
     });
     document.getElementById('btn-new').addEventListener('click', () => {
       LIFE.E.wipe();
       LIFE.E.newGame(document.getElementById('seed').value);
       mode = 'node'; montageStep = 0; perspective = null;
-      UI.render();
+      safeRender();
     });
   }
   function applyA11y(k, on) {
@@ -6928,7 +6967,7 @@ LIFE.UI = (function () {
       + P(O.blurb) + '<div class="origin-jo">' + P(O.jo) + '</div>'
       + '<p class="seed-echo">world-seed: <code>' + esc(G.seed) + '</code> — the same town, replayed from another birth, is a different world.</p>'
       + '<button class="btn btn-primary" id="btn-go">Begin</button></div>';
-    document.getElementById('btn-go').addEventListener('click', () => { LIFE.E.next(); UI.render(); });
+    document.getElementById('btn-go').addEventListener('click', () => { LIFE.E.next(); safeRender(); });
   }
   function introScreen(G, ch) {
     app.innerHTML = rail(G, ch)
@@ -6937,7 +6976,7 @@ LIFE.UI = (function () {
       + '<p class="ch-age">Age ' + ch.age + ' — ' + ch.year + '</p>'
       + '<div class="prose">' + P(typeof ch.intro === 'function' ? ch.intro(G) : ch.intro) + '</div>'
       + '<button class="btn btn-primary" id="btn-go">Go on</button></div>';
-    document.getElementById('btn-go').addEventListener('click', () => { LIFE.E.next(); UI.render(); });
+    document.getElementById('btn-go').addEventListener('click', () => { LIFE.E.next(); safeRender(); });
   }
   function choiceButtons(G, choices, container, isBetween) {
     const waived = LIFE.E.costsWaived(choices);
@@ -6959,8 +6998,8 @@ LIFE.UI = (function () {
         + '</button>');
       if (!locked && !broke) btn.addEventListener('click', () => {
         LIFE.E.choose(c);
-        if (isBetween || !LIFE.E.G.lastAfter) { LIFE.E.next(); UI.render(); }
-        else { mode = 'aftermath'; UI.render(); }
+        if (isBetween || !LIFE.E.G.lastAfter) { LIFE.E.next(); safeRender(); }
+        else { mode = 'aftermath'; safeRender(); }
       });
       container.appendChild(btn);
     });
@@ -7010,7 +7049,7 @@ LIFE.UI = (function () {
       + '<div class="prose aftermath" data-voice="aftermath">' + P(G.lastAfter) + '</div>'
       + '<button class="btn btn-primary" id="btn-go">Go on</button></main>' + weatherPanel(G) + '</div>';
     document.getElementById('btn-go').addEventListener('click', () => {
-      mode = 'node'; LIFE.E.next(); UI.render();
+      mode = 'node'; LIFE.E.next(); safeRender();
     });
     syncField(G);
   }
@@ -7031,15 +7070,15 @@ LIFE.UI = (function () {
       + '<div class="prose">' + shown.map(l => '<p class="montage-line">' + l + '</p>').join('') + '</div>'
       + '<button class="btn btn-primary" id="btn-go">' + (montageStep + 1 < lines.length ? 'And then' : 'And then, at last') + '</button></div>';
     document.getElementById('btn-go').addEventListener('click', () => {
-      if (montageStep + 1 < lines.length) { montageStep++; UI.render(); }
-      else { LIFE.E.next(); UI.render(); }
+      if (montageStep + 1 < lines.length) { montageStep++; safeRender(); }
+      else { LIFE.E.next(); safeRender(); }
     });
   }
   function deathScreen(G) {
     app.innerHTML = '<div class="screen death-screen">'
       + '<div class="prose between-prose">' + P(LIFE.LEGACY.death(G)) + '</div>'
       + '<button class="btn btn-primary" id="btn-go">What remains</button></div>';
-    document.getElementById('btn-go').addEventListener('click', () => { LIFE.E.next(); UI.render(); });
+    document.getElementById('btn-go').addEventListener('click', () => { LIFE.E.next(); safeRender(); });
   }
   function legacyScreen(G) {
     const secs = LIFE.LEGACY.reflect(G);
@@ -7068,10 +7107,10 @@ LIFE.UI = (function () {
     app.innerHTML = html;
     LIFE.FIELD.drawArc(document.getElementById('arc'), G);
     document.getElementById('btn-again').addEventListener('click', () => {
-      const seed = G.seed; LIFE.E.wipe(); LIFE.E.newGame(seed + '+'); montageStep = 0; mode = 'node'; UI.render();
+      const seed = G.seed; LIFE.E.wipe(); LIFE.E.newGame(seed + '+'); montageStep = 0; mode = 'node'; safeRender();
     });
     document.getElementById('btn-fresh').addEventListener('click', () => {
-      LIFE.E.wipe(); montageStep = 0; mode = 'node'; UI.render();
+      LIFE.E.wipe(); montageStep = 0; mode = 'node'; safeRender();
     });
   }
   function devOverlay() {
@@ -7102,6 +7141,37 @@ LIFE.UI = (function () {
     LIFE.VOICE.readScreen();
     return result;
   }
+  function recoveryScreen(err) {
+    app.innerHTML = '<div class="screen recovery-screen">'
+      + '<p class="kicker">something went wrong</p>'
+      + '<h2>The telling faltered</h2>'
+      + '<div class="prose"><p>A fault interrupted this scene. Your life is saved — '
+      + 'nothing before this moment is lost.</p></div>'
+      + '<div class="title-buttons">'
+      + '<button class="btn btn-primary" id="btn-recover">Step back one moment</button>'
+      + '<button class="btn" id="btn-reload">Reload</button>'
+      + '</div>'
+      + '<details class="recovery-detail"><summary>Technical detail</summary>'
+      + '<pre>' + esc(String((err && err.stack) || err)) + '</pre></details></div>';
+    const r = document.getElementById('btn-recover');
+    if (r) r.addEventListener('click', () => {
+      if (LIFE.E.restoreCheckpoint()) { mode = 'node'; perspective = null; safeRender(); }
+      else { LIFE.E.wipe(); LIFE.E.G = null; safeRender(); }
+    });
+    const rl = document.getElementById('btn-reload');
+    if (rl) rl.addEventListener('click', () => window.location.reload());
+  }
+  function safeRender() {
+    try { UI.render(); }
+    catch (err) {
+      if (window.console && console.error) console.error('LIFE: render failed', err);
+      try { recoveryScreen(err); } catch (e) {
+        app.innerHTML = '<div class="screen"><h2>The telling faltered</h2>'
+          + '<p>Reload to continue; your life is saved.</p></div>';
+      }
+    }
+  }
+  UI.safeRender = safeRender;
   UI.render = function () {
     app = document.getElementById('app');
     const G = LIFE.E.G;
@@ -7132,7 +7202,7 @@ LIFE.UI = (function () {
   function boot() {
     LIFE.E.G = null;
     LIFE.VOICE.restore();     // remember the reading-aloud preference
-    LIFE.UI.render();
+    LIFE.UI.safeRender();     // through the error boundary, always
   }
   if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', boot);
   else boot();
