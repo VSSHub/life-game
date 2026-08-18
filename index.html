@@ -114,7 +114,19 @@ code { font-family: var(--mono); font-size: .85em; color: var(--ember); }
   font-family: var(--mono); padding: .55rem .8rem; width: min(320px, 90%); text-align: center; font-size: .9rem;
 }
 .seed-row input:focus { outline: 1px solid var(--ember-dim); }
-.title-buttons { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+.title-buttons { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; align-items: stretch; }
+.btn-sub {
+  display: block; font-size: .58rem; letter-spacing: .08em; text-transform: none;
+  color: var(--paper-faint); margin-top: .3rem;
+}
+.btn-danger { border-color: hsl(2, 40%, 38%); color: hsl(2, 45%, 68%); }
+.btn-danger:hover { border-color: hsl(2, 60%, 55%); color: hsl(2, 70%, 76%); background: hsla(2, 60%, 40%, .12); }
+.confirm-msg { flex-basis: 100%; font-size: .92rem; color: var(--paper-dim); margin-bottom: .4rem; }
+.storage-warn {
+  border: 1px solid hsl(2, 40%, 38%); color: hsl(2, 45%, 74%);
+  padding: .7rem .9rem; margin: 0 0 1.2rem; font-size: .88rem; text-align: left;
+}
+.save-note { font-size: .82rem; color: var(--paper-faint); margin-top: 1rem; }
 .footnote { margin-top: 1.6rem; color: var(--paper-faint); font-style: italic; font-size: .88rem; }
 .btn {
   font-family: var(--mono); font-size: .8rem; letter-spacing: .18em; text-transform: uppercase;
@@ -231,9 +243,10 @@ code { font-family: var(--mono); font-size: .85em; color: var(--ember); }
 .weather li { font-size: .84rem; font-style: italic; color: var(--paper-dim); margin-bottom: .65rem; line-height: 1.45; }
 .weather-note { font-family: var(--mono); font-size: .6rem; letter-spacing: .1em; text-transform: uppercase; color: var(--paper-faint); margin: .8rem 0 0; }
 @media (max-width: 860px) {
-  .layout { grid-template-columns: 1fr; }
-  .rail-panel { position: static; margin-top: 1.6rem; }
-  #field { height: 210px; }
+  .layout { display: flex; flex-direction: column; gap: 1.4rem; }
+  .rail-panel { position: static; margin-top: .8rem; order: -1; }
+  #field { height: 200px; }
+  .rail-panel .weather, .rail-panel .field-key, .rail-panel .voice-bar { order: 2; }
 }
 .persp { animation: rise .5s ease both; }
 .persp h2 { font-size: 1.8rem; margin-bottom: .2rem; }
@@ -265,6 +278,11 @@ code { font-family: var(--mono); font-size: .85em; color: var(--ember); }
   letter-spacing: .26em; text-transform: uppercase; color: var(--ember); margin-bottom: .5rem;
 }
 .overlay-block p:last-child { margin-bottom: 0; }
+.lens-gloss {
+  font-style: normal; font-size: .8rem; color: var(--paper-faint);
+  border-top: 1px solid var(--rule); padding-top: .6rem; margin: .8rem 0 0;
+}
+.lens-gloss em { color: var(--ember); font-style: normal; }
 .evidence { margin: 1.2rem 0; border: 1px dashed var(--rule); padding: .6rem .9rem; }
 .evidence summary {
   cursor: pointer; font-family: var(--mono); font-size: .7rem; letter-spacing: .2em;
@@ -524,7 +542,16 @@ LIFE.E = (function () {
     const r = () => words[Math.floor(Math.random() * words.length)];
     return r() + '-' + r() + '-' + Math.floor(Math.random() * 999);
   }
-  E.newGame = function (seedStr) {
+  E.storageWorks = function () {
+    try {
+      const k = '__life_probe__';
+      localStorage.setItem(k, '1');
+      const ok = localStorage.getItem(k) === '1';
+      localStorage.removeItem(k);
+      return ok;
+    } catch (e) { return false; }
+  };
+  E.newGame = function (seedStr, originOverride) {
     const seed = (seedStr && seedStr.trim()) ? seedStr.trim() : randomSeedString();
     rngFn = mulberry32(hashSeed(seed));
     const G = E.G = {
@@ -540,13 +567,14 @@ LIFE.E = (function () {
       lastAfter: null,
     };
     G.rngCalls = 0;
-    const r = E.rand();
-    G.origin = r < 0.34 ? 'a' : r < 0.67 ? 'b' : 'c';
-    const O = LIFE.W.origins[G.origin];
-    LIFE.T.axes.forEach(ax => { G.axes[ax.id] = O.axes[ax.id] != null ? O.axes[ax.id] : 40; });
     const t = E.rand();
     G.hidden.antennaTruth = t < 0.55 ? 'null' : t < 0.85 ? 'anomaly' : 'fraud';
     G.hidden.raoAnomaly = E.rand() < 0.4;
+    const r = E.rand();
+    const rolled = r < 0.34 ? 'a' : r < 0.67 ? 'b' : 'c';
+    G.origin = (originOverride && LIFE.W.origins[originOverride]) ? originOverride : rolled;
+    const O = LIFE.W.origins[G.origin];
+    LIFE.T.axes.forEach(ax => { G.axes[ax.id] = O.axes[ax.id] != null ? O.axes[ax.id] : 40; });
     G.hidden.deathRoll = E.rand();
     Object.keys(LIFE.W.npcs).forEach(id => {
       const n = LIFE.W.npcs[id];
@@ -6412,7 +6440,13 @@ LIFE.FIELD3D = (function () {
     gl.uniform1f(uSoft, 0.42);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
-  function loop() { t += 16; if (LIFE.E.G) draw(); raf = requestAnimationFrame(loop); }
+  function loop() {
+    raf = requestAnimationFrame(loop);
+    if (!LIFE.E.G || !gl || !cv || !cv.isConnected) return;
+    if (document.hidden) return;
+    t += 16;
+    draw();
+  }
   function hitAt(mx, my) {
     if (!F3._VP || !cv) return null;
     const r = cv.getBoundingClientRect();
@@ -6443,10 +6477,17 @@ LIFE.FIELD3D = (function () {
   F3.mount = function (canvas, pickHandler) {
     onPick = pickHandler;
     if (cv === canvas) return true;
+    if (gl) {
+      try {
+        const lose = gl.getExtension('WEBGL_lose_context');
+        if (lose) lose.loseContext();
+      } catch (e) {}
+      gl = null;
+    }
     cv = canvas;
     gl = cv.getContext('webgl', { alpha: false, antialias: true, premultipliedAlpha: false })
       || cv.getContext('experimental-webgl');
-    if (!gl) return false;
+    if (!gl) { cv = null; return false; }
     progPoint = link(VS_POINT, FS_POINT);
     progLine = link(VS_LINE, FS_LINE);
     if (!progPoint || !progLine) { gl = null; return false; }
@@ -6854,7 +6895,8 @@ LIFE.UI = (function () {
       + '</div>'
       + '<div class="rail-right">'
       + '<span class="rail-lens" title="' + lens.desc + '">lens: <em>' + lens.name + '</em></span>'
-      + '<span class="rail-att" title="Attention — investigating, building, and confronting spend it. It returns with each chapter.">' + att + '</span>'
+      + '<span class="rail-att" title="Investigating, building and confronting spend attention. It refills each chapter.">'
+      + 'attention ' + att + '</span>'
       + '</div></header>';
   }
   function weatherPanel(G) {
@@ -6991,8 +7033,28 @@ LIFE.UI = (function () {
       + 'and it settles nothing you owe them.</p>'
       + '<button class="btn" id="btn-back">Return to your own field</button></div>';
   }
+  function savedLifeSummary() {
+    try {
+      const raw = store.get('life-slice-save-v1');
+      if (!raw) return null;
+      const G = JSON.parse(raw).G;
+      if (!G || !G.seed) return null;
+      const O = LIFE.W.origins[G.origin];
+      if (G.phase === 'legacy' || G.phase === 'death' || G.phase === 'montage') {
+        return { label: 'a life at its end', seed: G.seed, origin: O ? O.title : '' };
+      }
+      const ch = LIFE.CH[G.pos ? G.pos.ch : 0];
+      return {
+        label: ch ? 'Ch. ' + ch.num + ', age ' + ch.age : 'just born',
+        seed: G.seed,
+        origin: O ? O.title : '',
+      };
+    } catch (e) { return null; }
+  }
   function titleScreen() {
-    const hasSave = !!store.get('life-slice-save-v1');
+    const saved = savedLifeSummary();
+    const hasSave = !!saved;
+    const canSave = LIFE.E.storageWorks();
     app.innerHTML = '<div class="screen title-screen">'
       + '<p class="kicker">a consciousness &amp; civilization simulator — vertical slice</p>'
       + '<h1 class="game-title">L I F E</h1>'
@@ -7022,10 +7084,16 @@ LIFE.UI = (function () {
       + '<label><input type="checkbox" id="opt-motion"> Reduce motion</label></div>'
       + '<div class="seed-row"><label for="seed">Seed <span class="seed-hint">(a world; leave blank for a new one)</span></label>'
       + '<input id="seed" type="text" placeholder="e.g. marrow-levee-441" autocomplete="off"></div>'
-      + '<div class="title-buttons">'
-      + (hasSave ? '<button class="btn btn-primary" id="btn-continue">Continue the life</button>' : '')
-      + '<button class="btn" id="btn-new">' + (hasSave ? 'Begin a different life' : 'Be born') + '</button>'
+      + (canSave ? '' : '<p class="storage-warn">This browser will not let the game save. '
+          + 'You can still play, but the life ends when you close this tab.</p>')
+      + '<div class="title-buttons" id="title-buttons">'
+      + (hasSave ? '<button class="btn btn-primary" id="btn-continue">Continue the life'
+          + '<span class="btn-sub">' + esc(saved.label) + ' · seed ' + esc(saved.seed) + '</span></button>' : '')
+      + '<button class="btn' + (hasSave ? ' btn-danger' : '') + '" id="btn-new">'
+      + (hasSave ? 'Begin a different life' : 'Be born') + '</button>'
       + '</div>'
+      + (canSave ? '<p class="save-note">Eight chapters, ages six to forty. '
+          + 'It saves after every choice — close this whenever and pick it up here.</p>' : '')
       + '<p class="footnote">You will not choose your starting conditions. Nobody does.</p>'
       + voiceBar()
       + '</div>';
@@ -7041,17 +7109,36 @@ LIFE.UI = (function () {
     const cont = document.getElementById('btn-continue');
     if (cont) cont.addEventListener('click', () => {
       if (LIFE.E.load()) { mode = LIFE.E.G.lastAfter ? 'aftermath' : 'node'; safeRender(); }
+      else {
+        const row = document.getElementById('title-buttons');
+        row.innerHTML = '<p class="confirm-msg">That life could not be read — the save '
+          + 'is damaged or from an older version.</p>'
+          + '<button class="btn btn-primary" id="btn-fresh-start">Begin a new life</button>';
+        document.getElementById('btn-fresh-start').addEventListener('click', () => {
+          LIFE.E.wipe(); beginNewLife();
+        });
+      }
     });
     const prim = app.querySelector('.primer');
     if (prim) prim.addEventListener('toggle', () => {
       if (!prim.open) store.set('life-seen-primer', '1');
     });
-    document.getElementById('btn-new').addEventListener('click', () => {
+    function beginNewLife() {
       store.set('life-seen-primer', '1');
       LIFE.E.wipe();
       LIFE.E.newGame(document.getElementById('seed').value);
       mode = 'node'; montageStep = 0; perspective = null;
       safeRender();
+    }
+    document.getElementById('btn-new').addEventListener('click', () => {
+      if (!hasSave) return beginNewLife();
+      const row = document.getElementById('title-buttons');
+      row.innerHTML = '<p class="confirm-msg">This ends the life in progress — '
+        + esc(saved.label) + '. It cannot be recovered.</p>'
+        + '<button class="btn btn-danger" id="btn-confirm-new">End it and begin again</button>'
+        + '<button class="btn btn-primary" id="btn-cancel-new">Keep the life</button>';
+      document.getElementById('btn-confirm-new').addEventListener('click', beginNewLife);
+      document.getElementById('btn-cancel-new').addEventListener('click', () => safeRender());
     });
   }
   function applyA11y(k, on) {
@@ -7066,7 +7153,7 @@ LIFE.UI = (function () {
       + P(O.blurb) + '<div class="origin-jo">' + P(O.jo) + '</div>'
       + '<p class="seed-echo">world-seed: <code>' + esc(G.seed) + '</code> — the same town, replayed from another birth, is a different world.</p>'
       + '<button class="btn btn-primary" id="btn-go">Begin</button></div>';
-    document.getElementById('btn-go').addEventListener('click', () => { LIFE.E.next(); safeRender(); });
+    document.getElementById('btn-go').addEventListener('click', () => { step(function () { LIFE.E.next(); }); });
   }
   function introScreen(G, ch) {
     app.innerHTML = rail(G, ch)
@@ -7075,7 +7162,7 @@ LIFE.UI = (function () {
       + '<p class="ch-age">Age ' + ch.age + ' — ' + ch.year + '</p>'
       + '<div class="prose">' + P(typeof ch.intro === 'function' ? ch.intro(G) : ch.intro) + '</div>'
       + '<button class="btn btn-primary" id="btn-go">Go on</button></div>';
-    document.getElementById('btn-go').addEventListener('click', () => { LIFE.E.next(); safeRender(); });
+    document.getElementById('btn-go').addEventListener('click', () => { step(function () { LIFE.E.next(); }); });
   }
   function choiceButtons(G, choices, container, isBetween) {
     const waived = LIFE.E.costsWaived(choices);
@@ -7097,7 +7184,7 @@ LIFE.UI = (function () {
         + '</button>');
       if (!locked && !broke) btn.addEventListener('click', () => {
         LIFE.E.choose(c);
-        if (isBetween || !LIFE.E.G.lastAfter) { LIFE.E.next(); safeRender(); }
+        if (isBetween || !LIFE.E.G.lastAfter) { step(function () { LIFE.E.next(); }); }
         else { mode = 'aftermath'; safeRender(); }
       });
       container.appendChild(btn);
@@ -7112,7 +7199,11 @@ LIFE.UI = (function () {
       + '<div class="prose" data-voice="narrator">' + P(r.base) + '</div>';
     if (r.overlay) {
       html += '<div class="overlay-block"><span class="overlay-tag">through the ' + lens.name + ' lens</span>'
-        + '<div data-voice="lens">' + P(r.overlay) + '</div></div>';
+        + '<div data-voice="lens">' + P(r.overlay) + '</div>'
+        + (G.pos.ch === 0 && G.pos.sc === 0
+            ? '<p class="lens-gloss">This is how <em>you</em> are reading the moment — '
+              + 'not what happened. It changes as you do.</p>' : '')
+        + '</div>';
     }
     html += '<div class="ev-slot"></div><div class="choices"></div></main>' + weatherPanel(G) + '</div>';
     if (perspective) {
@@ -7148,7 +7239,7 @@ LIFE.UI = (function () {
       + '<div class="prose aftermath" data-voice="aftermath">' + P(G.lastAfter) + '</div>'
       + '<button class="btn btn-primary" id="btn-go">Go on</button></main>' + weatherPanel(G) + '</div>';
     document.getElementById('btn-go').addEventListener('click', () => {
-      mode = 'node'; LIFE.E.next(); safeRender();
+      step(function () { mode = 'node'; LIFE.E.next(); });
     });
     syncField(G);
   }
@@ -7170,14 +7261,14 @@ LIFE.UI = (function () {
       + '<button class="btn btn-primary" id="btn-go">' + (montageStep + 1 < lines.length ? 'And then' : 'And then, at last') + '</button></div>';
     document.getElementById('btn-go').addEventListener('click', () => {
       if (montageStep + 1 < lines.length) { montageStep++; safeRender(); }
-      else { LIFE.E.next(); safeRender(); }
+      else { step(function () { LIFE.E.next(); }); }
     });
   }
   function deathScreen(G) {
     app.innerHTML = '<div class="screen death-screen">'
       + '<div class="prose between-prose">' + P(LIFE.LEGACY.death(G)) + '</div>'
       + '<button class="btn btn-primary" id="btn-go">What remains</button></div>';
-    document.getElementById('btn-go').addEventListener('click', () => { LIFE.E.next(); safeRender(); });
+    document.getElementById('btn-go').addEventListener('click', () => { step(function () { LIFE.E.next(); }); });
   }
   function legacyScreen(G) {
     const secs = LIFE.LEGACY.reflect(G);
@@ -7212,7 +7303,13 @@ LIFE.UI = (function () {
     LIFE.FIELD.drawArc(document.getElementById('arc'), G);
     wireShare(G);
     document.getElementById('btn-again').addEventListener('click', () => {
-      const seed = G.seed; LIFE.E.wipe(); LIFE.E.newGame(seed + '+'); montageStep = 0; mode = 'node'; safeRender();
+      const seed = G.seed;
+      const order = ['a', 'b', 'c'];
+      const next = order[(order.indexOf(G.origin) + 1) % order.length];
+      LIFE.E.wipe();
+      LIFE.E.newGame(seed, next);
+      montageStep = 0; mode = 'node'; perspective = null;
+      safeRender();
     });
     document.getElementById('btn-fresh').addEventListener('click', () => {
       LIFE.E.wipe(); montageStep = 0; mode = 'node'; safeRender();
@@ -7249,7 +7346,11 @@ LIFE.UI = (function () {
       }
     });
   }
+  function devEnabled() {
+    try { return /[?&]dev=1\b/.test(location.search); } catch (e) { return false; }
+  }
   function devOverlay() {
+    if (!devEnabled()) return;
     if (document.getElementById('dev-toggle')) return;
     const btn = el('<button id="dev-toggle" title="Developer view — the hidden state the player never sees in ordinary play">◉</button>');
     const panel = el('<div id="dev-panel" hidden><h3>The Answer Sheet <span>(developer view — the four layers beneath the experience)</span></h3><pre id="dev-pre"></pre></div>');
@@ -7272,8 +7373,20 @@ LIFE.UI = (function () {
       }
     });
   }
+  let lastScreenKey = null;
+  function resetScrollIfNewScreen() {
+    const G = LIFE.E.G;
+    const key = G
+      ? [G.phase, G.pos.ch, G.pos.sc, G.pos.stage, mode, perspective, montageStep].join('|')
+      : 'title';
+    if (key !== lastScreenKey) {
+      lastScreenKey = key;
+      try { window.scrollTo(0, 0); } catch (e) {}
+    }
+  }
   function after(result) {
     wireVoice();
+    resetScrollIfNewScreen();
     LIFE.VOICE.readScreen();
     return result;
   }
@@ -7297,6 +7410,16 @@ LIFE.UI = (function () {
     const rl = document.getElementById('btn-reload');
     if (rl) rl.addEventListener('click', () => window.location.reload());
   }
+  function step(fn) {
+    try { fn(); }
+    catch (err) {
+      if (window.console && console.error) console.error('LIFE: step failed', err);
+      try { recoveryScreen(err); } catch (e) {}
+      return;
+    }
+    safeRender();
+  }
+  UI.step = step;
   function safeRender() {
     try { UI.render(); }
     catch (err) {
