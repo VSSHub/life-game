@@ -83,6 +83,21 @@ code { font-family: var(--mono); font-size: .85em; color: var(--ember); }
   color: var(--paper); text-shadow: 0 0 60px hsla(var(--lens-hue), 70%, 50%, .35);
 }
 .epigraph { color: var(--paper-dim); font-style: italic; margin-bottom: 2.2rem; }
+.primer {
+  text-align: left; border: 1px solid var(--rule); border-left: 3px solid var(--ember);
+  padding: .9rem 1.2rem; margin: 0 0 1rem; background: var(--ink-2);
+}
+.primer summary {
+  cursor: pointer; font-family: var(--mono); font-size: .68rem; letter-spacing: .22em;
+  text-transform: uppercase; color: var(--ember);
+}
+.primer ol { margin: .9rem 0 0; padding-left: 1.1rem; }
+.primer li { font-size: .92rem; color: var(--paper-dim); line-height: 1.55; margin-bottom: .6rem; }
+.primer li b { color: var(--paper); font-weight: 600; }
+.primer-time {
+  font-family: var(--mono); font-size: .64rem; letter-spacing: .1em;
+  color: var(--paper-faint); margin: .6rem 0 0; text-transform: uppercase;
+}
 .warnings {
   text-align: left; border: 1px solid var(--rule); padding: 1rem 1.2rem; margin: 0 0 1.4rem;
   background: var(--ink-2);
@@ -6935,6 +6950,24 @@ LIFE.UI = (function () {
       + '<p class="kicker">a consciousness &amp; civilization simulator — vertical slice</p>'
       + '<h1 class="game-title">L I F E</h1>'
       + '<p class="epigraph">Every person experiences a different version of the same world.<br>You are about to inherit one of them.</p>'
+      + '<details class="primer"' + (store.get('life-seen-primer') ? '' : ' open') + '>'
+      + '<summary>How this works</summary>'
+      + '<ol>'
+      + '<li>You are <b>born into a life you do not choose</b> — family, town, class, '
+      + 'and a set of beliefs installed before you could weigh them.</li>'
+      + '<li>Each scene shows <b>what happened</b>, then — set apart — <b>your character’s '
+      + 'reading of it</b>. Those are different things, and the game never tells you '
+      + 'which reading is right.</li>'
+      + '<li>Choices cost <b>attention</b> (the dots, top right). You cannot do '
+      + 'everything in a chapter. What you skip is a choice too.</li>'
+      + '<li>The <b>Field</b> beside the story is your own mind: people at the distance '
+      + 'you hold them, and the cage of your certainty — which only becomes visible '
+      + 'once you are aware enough to see it. Tap anyone to stand inside their view.</li>'
+      + '<li>Nothing is scored. At death you get <b>an accounting</b> — of who you '
+      + 'understood, what you built, and what it became without you.</li>'
+      + '</ol>'
+      + '<p class="primer-time">A life takes about 20–30 minutes. It saves as you go.</p>'
+      + '</details>'
       + '<div class="warnings"><h3>Before you begin</h3>'
       + '<p>This life contains: religious conditioning and religious doubt; a natural disaster; grief and the death of loved ones; social exclusion; and one accounting, at the end, that does not flatter. Nothing here rewards contempt for any person.</p></div>'
       + '<div class="a11y"><label><input type="checkbox" id="opt-big"> Larger text</label>'
@@ -6962,7 +6995,12 @@ LIFE.UI = (function () {
     if (cont) cont.addEventListener('click', () => {
       if (LIFE.E.load()) { mode = LIFE.E.G.lastAfter ? 'aftermath' : 'node'; safeRender(); }
     });
+    const prim = app.querySelector('.primer');
+    if (prim) prim.addEventListener('toggle', () => {
+      if (!prim.open) store.set('life-seen-primer', '1');
+    });
     document.getElementById('btn-new').addEventListener('click', () => {
+      store.set('life-seen-primer', '1');
       LIFE.E.wipe();
       LIFE.E.newGame(document.getElementById('seed').value);
       mode = 'node'; montageStep = 0; perspective = null;
